@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Screen Reader AI – iPhone Web App</title>
+  <style>
+    :root{
+      --bg:#0b0b0c; --ink:#fff; --muted:#9aa0a6; --panel:#121316; --stroke:#2a2b2f; --brand:#2c7be5; --ok:#0fa77a; --warn:#f5a524; --vio:#8a63d2;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,system-ui,sans-serif}
+    .app{height:100vh;display:grid;grid-template-rows:45vh auto;overflow:hidden}
+    video{width:100%;height:100%;object-fit:cover;background:#000}
+
+    /* Bottom console */
+    .bottom{padding:10px;display:flex;flex-direction:column;gap:8px;overflow-y:auto;max-height:55vh}
+    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    button,input{border:none;border-radius:10px;padding:10px 12px;font-size:14px}
+    button{background:var(--brand);color:#fff;cursor:pointer}
+    button:active{opacity:0.8}
+    #saveKey{background:var(--brand)}
+    #clearKey{background:#6c757d}
+    #askNow{background:var(--ok)}
+    #testBtn{background:var(--vio)}
+    .meta{font-size:12px;opacity:.9}
+
+    /* Split working/locked pane */
+    .panes{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .pane{background:var(--panel);border:1px solid var(--stroke);border-radius:12px;padding:10px;min-height:100px;max-height:280px;display:flex;flex-direction:column;gap:8px}
+    .pane h3{margin:0;font-size:13px;letter-spacing:.2px;color:var(--muted);display:flex;justify-content:space-between;align-items:center}
+    .pill{font-size:11px;border:1px solid var(--stroke);padding:2px 8px;border-radius:999px;color:var(--muted)}
+    .answerCard{flex:1;display:flex;flex-direction:column;gap:8px;border:1px solid var(--stroke);border-radius:10px;padding:10px;background:#0e0f12;overflow:auto}
+    .bigAnswer{font-weight:700;font-size:20px;line-height:1.2;letter-spacing:.2px}
+    .letter{display:inline-block;min-width:36px;text-align:center;border:1px solid var(--stroke);border-radius:8px;padding:4px 8px;margin-right:8px;background:#1a1b1f}
+    .rationale{font-size:13px;color:var(--muted);margin-top:6px}
+    .controls{display:flex;gap:6px;flex-wrap:wrap}
+    .controls button{font-size:12px;padding:6px 10px}
+    .secondary{background:#202127}
+    .ghost{background:transparent;border:1px solid var(--stroke);color:var(--ink)}
+    .danger{background:#b23b3b}
+    .ok{background:var(--ok)}
+    .warn{background:var(--warn);color:#111}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+
+    #transcript{max-height:4em;overflow:auto;border:1px dashed var(--stroke);padding:6px;border-radius:8px;font-size:11px}
+
+    /* Small switches */
+    .switch{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+    .switch input{width:16px;height:16px}
+
+    @media (max-width:700px){
+      .panes{grid-template-columns:1fr}
+      .bigAnswer{font-size:18px}
+      .app{grid-template-rows:50vh auto}
+      .bottom{max-height:50vh}
+    }
+    
+    @media (min-width:1200px){
+      .app{grid-template-rows:40vh auto}
+      .bottom{max-height:60vh}
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <section class="top">
+      <video id="cam" autoplay playsinline muted></video>
+    </section>
+
+    <section class="bottom">
+      <!-- API key bar -->
+      <div id="keyBar">
+        <input id="apiInput" type="password" placeholder="Enter your OpenAI API key" autocomplete="off" autocapitalize="none" autocorrect="off" style="width:100%;" />
+        <div class="row">
+          <button id="toggleKey" class="secondary">Show Key</button>
+          <button id="saveKey">Save Key</button>
+          <button id="clearKey" class="secondary" style="display:none;">Change Key</button>
+          <span id="keyStatus" class="meta">Key not saved</span>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="row">
+        <button id="startCam">Start Camera</button>
+        <button id="askNow" class="ok">Ask Now</button>
+        <button id="testBtn" style="background:#8a63d2;">Run Test</button>
+        <label class="switch" style="margin-left:auto;">
+          <input id="autoSend" type="checkbox" checked /> Auto
+        </label>
+      </div>
+
+      <!-- Status line -->
+      <div class="row" style="gap:12px;font-size:11px">
+        <span id="status" class="meta">Status: idle</span>
+        <span id="sendIndicator" class="meta">💤 Waiting</span>
+        <span id="metrics" class="meta">Change: 0%</span>
+      </div>
+
+      <!-- Transcript / debug -->
+      <div id="transcript" class="mono"></div>
+
+      <!-- Split panes -->
+      <div class="panes">
+        <!-- Working (current) -->
+        <div class="pane">
+          <h3>Current <span class="pill" id="workingMeta">–</span></h3>
+          <div class="answerCard">
+            <div class="bigAnswer" id="workingBig">No response</div>
+            <div class="rationale" id="workingRat" style="display:none;"></div>
+          </div>
+          <div class="controls">
+            <button id="lockNow" class="ok">→ Lock</button>
+            <button id="copyWorking" class="ghost">Copy</button>
+          </div>
+        </div>
+
+        <!-- Locked (last) -->
+        <div class="pane">
+          <h3>Locked <span class="pill" id="lockedMeta">–</span></h3>
+          <div class="answerCard">
+            <div class="bigAnswer" id="lockedBig">–</div>
+            <div class="rationale" id="lockedRat" style="display:none;"></div>
+          </div>
+          <div class="controls">
+            <button id="unlock" class="warn">Unlock</button>
+            <button id="copyLocked" class="ghost">Copy</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <canvas id="frame" width="640" height="480" style="display:none"></canvas>
+
+  <script>
+    /* ---------- DOM ---------- */
+    const video=document.getElementById('cam');
+    const startCam=document.getElementById('startCam');
+    const statusEl=document.getElementById('status');
+    const apiInput=document.getElementById('apiInput');
+    const saveKey=document.getElementById('saveKey');
+    const toggleKey=document.getElementById('toggleKey');
+    const clearKey=document.getElementById('clearKey');
+    const keyStatus=document.getElementById('keyStatus');
+    const askNow=document.getElementById('askNow');
+    const testBtn=document.getElementById('testBtn');
+    const metrics=document.getElementById('metrics');
+    const autoSend=document.getElementById('autoSend');
+    const sendIndicator=document.getElementById('sendIndicator');
+    const transcriptEl=document.getElementById('transcript');
+    const frame=document.getElementById('frame');
+    const ctx=frame.getContext('2d');
+
+    // Working UI
+    const workingBig=document.getElementById('workingBig');
+    const workingRat=document.getElementById('workingRat');
+    const workingMeta=document.getElementById('workingMeta');
+    const lockNow=document.getElementById('lockNow');
+    const copyWorking=document.getElementById('copyWorking');
+
+    // Locked UI
+    const lockedBig=document.getElementById('lockedBig');
+    const lockedRat=document.getElementById('lockedRat');
+    const lockedMeta=document.getElementById('lockedMeta');
+    const unlockBtn=document.getElementById('unlock');
+    const copyLocked=document.getElementById('copyLocked');
+
+    /* ---------- Key storage ---------- */
+    let apiKey=localStorage.getItem('openaiKey')||'';
+    if(apiKey){ apiInput.value=apiKey; collapseKeyUI(true); }
+    apiInput.onpaste = e => true; apiInput.addEventListener('paste', ()=>{});
+
+    toggleKey.onclick=()=>{
+      apiInput.type = apiInput.type === 'password' ? 'text' : 'password';
+      toggleKey.textContent = apiInput.type === 'password' ? 'Show Key' : 'Hide Key';
+    };
+    saveKey.onclick=()=>{
+      apiKey=apiInput.value.trim();
+      if(!apiKey){ alert('Enter a key first'); return; }
+      localStorage.setItem('openaiKey',apiKey);
+      collapseKeyUI(true);
+    };
+    clearKey.onclick=()=>{ localStorage.removeItem('openaiKey'); apiKey=''; apiInput.value=''; collapseKeyUI(false); };
+    function collapseKeyUI(saved){
+      if(saved){
+        apiInput.type='password'; apiInput.disabled=true; toggleKey.disabled=true;
+        saveKey.style.display='none'; clearKey.style.display='inline-block';
+        keyStatus.textContent='Key saved locally';
+      } else {
+        apiInput.disabled=false; toggleKey.disabled=false;
+        saveKey.style.display='inline-block'; clearKey.style.display='none';
+        keyStatus.textContent='Key not saved';
+      }
+    }
+
+    /* ---------- Camera & loop ---------- */
+    startCam.onclick=startCamera;
+    async function startCamera(){
+      try{
+        if(!(window.isSecureContext || location.hostname==='localhost')){ alert('Camera requires HTTPS or localhost.'); return; }
+        const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment', width:{ideal:1920}, height:{ideal:1080}}});
+        video.srcObject=stream; await video.play();
+        statusEl.textContent='Status: camera running';
+        const setSize=()=>{ frame.width = video.videoWidth||1280; frame.height=video.videoHeight||720; };
+        if(video.readyState>=2) setSize(); else video.addEventListener('loadedmetadata', setSize, {once:true});
+        startMonitorLoop();
+      }catch(e){ alert('Camera permission denied or not secure context'); console.error(e); }
+    }
+
+    /* ---------- Change detection ---------- */
+    const CHANGE_THRESHOLD = 0.12; const MIN_INTERVAL_MS = 5000; const STABLE_FRAMES = 3;
+    let lastSentTime=0; let lastImageHash=''; let stableCount=0; let isProcessing=false; let currentHash='';
+    let lockedQuestionHash=null;
+
+    function getImageHash(imgData){
+      const gridSize=8,w=frame.width,h=frame.height,cellW=Math.floor(w/gridSize),cellH=Math.floor(h/gridSize);
+      let hash='';
+      for(let gy=0;gy<gridSize;gy++){
+        for(let gx=0;gx<gridSize;gx++){
+          let sum=0,count=0,startX=gx*cellW,startY=gy*cellH;
+          for(let y=startY;y<startY+cellH&&y<h;y++){
+            for(let x=startX;x<startX+cellW&&x<w;x++){
+              const i=(y*w+x)*4; sum+=(imgData.data[i]+imgData.data[i+1]+imgData.data[i+2])/3; count++;
+            }
+          }
+          hash+=Math.floor(sum/count/32).toString();
+        }
+      }
+      return hash;
+    }
+    function hashDifference(h1,h2){
+      if(!h1||!h2||h1.length!==h2.length) return 1;
+      let diff=0; for(let i=0;i<h1.length;i++){ if(h1[i]!==h2[i]) diff++; }
+      return diff/h1.length;
+    }
+
+    async function startMonitorLoop(){
+      async function loop(){
+        if(isProcessing){ setTimeout(loop, 600); return; }
+        ctx.clearRect(0,0,frame.width,frame.height);
+        ctx.drawImage(video,0,0,frame.width,frame.height);
+
+        const imageData=ctx.getImageData(0,0,frame.width,frame.height);
+        currentHash=getImageHash(imageData);
+        const diff=hashDifference(currentHash,lastImageHash);
+        metrics.textContent=`Change: ${(diff*100).toFixed(1)}%`;
+
+        if(autoSend.checked){
+          const now=Date.now();
+          const cooldownRemaining=MIN_INTERVAL_MS-(now-lastSentTime);
+          const isNewQuestion = lockedQuestionHash && hashDifference(currentHash, lockedQuestionHash) > 0.20;
+
+          if(isNewQuestion){
+            lockedQuestionHash=null;
+            sendIndicator.textContent='🆕 New question!';
+          } else if(lockedQuestionHash){
+            sendIndicator.textContent='🔒 Locked';
+          } else if(cooldownRemaining>0){
+            sendIndicator.textContent=`⏱️ ${Math.ceil(cooldownRemaining/1000)}s`;
+          } else if(diff<CHANGE_THRESHOLD){
+            stableCount++;
+            sendIndicator.textContent=`⏳ ${stableCount}/${STABLE_FRAMES}`;
+            if(stableCount>=STABLE_FRAMES){
+              const base64Image = frame.toDataURL('image/jpeg', 0.92).split(',')[1];
+              lastImageHash=currentHash;
+              await sendImageToAI(base64Image,currentHash);
+              lastSentTime=now; stableCount=0;
+            }
+          } else {
+            stableCount=0; lastImageHash=currentHash;
+            sendIndicator.textContent=`👀 ${(diff*100).toFixed(0)}%`;
+          }
+        } else {
+          sendIndicator.textContent='⏸️ OFF';
+        }
+
+        transcriptEl.textContent=`Monitoring – ${currentHash.slice(0,20)}…`;
+        setTimeout(loop, 800);
+      }
+      loop();
+    }
+
+    /* ---------- Rendering helpers ---------- */
+    function renderAnswer(targetBigEl, targetRatEl, metaEl, data){
+      const letter = data.letter ? data.letter.toUpperCase().replace(/[^A-D]/g,'') : '';
+      const letterTag = letter ? `<span class="letter">${letter}</span>` : '';
+      const mainText = (data.answer||'').trim() || 'No answer';
+      targetBigEl.innerHTML = `${letterTag}${escapeHTML(mainText)}`;
+
+      if(data.rationale && data.rationale.trim()){
+        targetRatEl.style.display='';
+        targetRatEl.textContent = data.rationale.trim();
+      } else {
+        targetRatEl.style.display='none';
+      }
+
+      if(data.question && data.question.length>0){
+        metaEl.textContent = truncate(data.question, 50);
+      } else {
+        metaEl.textContent = '–';
+      }
+    }
+
+    function truncate(s,n){ if(!s) return ''; return s.length>n? s.slice(0,n-1)+'…':s; }
+    function escapeHTML(s){ return String(s).replace(/[&<>"']/g,m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'\"":"'"}[m])); }
+
+    /* ---------- Model calling ---------- */
+    async function callOpenAI(base64Image){
+      if(!apiKey){return {question:'',answer:'No API key set',letter:'',rationale:''};}
+      try{
+        const messages = [
+          {role:'system', content:'You are analyzing images of test questions. You must read the question carefully and provide accurate answers. Use spatial layout and numerical reasoning - do not guess. Be precise and methodical in your analysis.'},
+          {role:'user', content:[
+            {type:'text', text:'Carefully read this test question image. Pay close attention to all numbers, options, and spatial layout. Use logical reasoning to determine the correct answer. Provide: 1) The exact question, 2) The correct answer (if multiple choice, include the letter), 3) A brief explanation (2-3 lines) of WHY it\'s correct. Use spatial layout and numerical reasoning - do not guess.'},
+            {type:'image_url', image_url:{url:`data:image/jpeg;base64,${base64Image}`}}
+          ]}
+        ];
+        
+        console.log('Calling OpenAI API...');
+        const r = await fetch('https://api.openai.com/v1/chat/completions',{
+          method:'POST',
+          headers:{
+            'Content-Type':'application/json',
+            'Authorization':`Bearer ${apiKey}`
+          },
+          body:JSON.stringify({
+            model:'gpt-4o',
+            temperature:0.1,
+            max_tokens:400,
+            messages
+          })
+        });
+        
+        console.log('Response status:', r.status);
+        
+        if(!r.ok){ 
+          const errorText = await r.text();
+          console.error('API Error:', errorText);
+          let errorMsg = `HTTP ${r.status}`;
+          try{
+            const errorJson = JSON.parse(errorText);
+            if(errorJson.error?.message) errorMsg = errorJson.error.message;
+          }catch(e){}
+          throw new Error(errorMsg);
+        }
+        
+        const data=await r.json();
+        const content = data.choices?.[0]?.message?.content||'';
+        console.log('API Response:', content);
+        return parseAnswer(content);
+      }catch(e){
+        console.error('Full error:', e);
+        let errorMsg = e.message || String(e);
+        
+        // Provide helpful error messages
+        if(errorMsg.includes('Failed to fetch') || errorMsg.includes('NetworkError')){
+          errorMsg = 'Network error. Check your internet connection.';
+        } else if(errorMsg.includes('401')){
+          errorMsg = 'Invalid API key. Please check your key.';
+        } else if(errorMsg.includes('429')){
+          errorMsg = 'Rate limit exceeded. Wait a moment.';
+        } else if(errorMsg.includes('insufficient_quota')){
+          errorMsg = 'API quota exceeded. Check your OpenAI billing.';
+        }
+        
+        return {question:'',answer:`Error: ${errorMsg}`,letter:'',rationale:''};
+      }
+    }
+
+    function parseAnswer(content){
+      const lines = content.split('\n').filter(l=>l.trim());
+      let question='', answer='', letter='', rationale='';
+      
+      for(let line of lines){
+        if(/question:/i.test(line)){
+          question = line.replace(/.*question:\s*/i,'').trim();
+        } else if(/answer:/i.test(line)){
+          const answerText = line.replace(/.*answer:\s*/i,'').trim();
+          const match = answerText.match(/^([A-D])[)\.]?\s*(.+)/i);
+          if(match){
+            letter = match[1].toUpperCase();
+            answer = match[2].trim();
+          } else {
+            answer = answerText;
+          }
+        } else if(/explanation:|rationale:|why:/i.test(line)){
+          rationale = line.replace(/.*(?:explanation|rationale|why):\s*/i,'').trim();
+        }
+      }
+      
+      if(!answer && lines.length>0){
+        const firstLine = lines[0];
+        const match = firstLine.match(/^([A-D])[)\.]?\s*(.+)/i);
+        if(match){
+          letter = match[1].toUpperCase();
+          answer = match[2].trim();
+        } else {
+          answer = firstLine;
+        }
+      }
+      
+      return {question, answer: answer||content.trim(), letter, rationale};
+    }
+
+    /* ---------- App flow ---------- */
+    let lastWorking = {question:'',answer:'No response',letter:'',rationale:''};
+    let lastLocked = {question:'',answer:'–',letter:'',rationale:''};
+
+    async function sendImageToAI(base64Image, questionHash){
+      if(isProcessing) return;
+      isProcessing=true;
+      statusEl.textContent='Status: AI analyzing…';
+      workingBig.style.opacity='.5'; workingBig.textContent='…analyzing';
+      
+      const parsed = await callOpenAI(base64Image);
+      lastWorking = parsed;
+      renderAnswer(workingBig, workingRat, workingMeta, parsed);
+      workingBig.style.opacity='1';
+      
+      statusEl.textContent='Status: camera running';
+      
+      // Only show error in sendIndicator, don't lock errors
+      if(parsed.answer && !parsed.answer.startsWith('Error:')){
+        sendIndicator.textContent='✅ Done';
+        // Auto-lock successful answers
+        lockedQuestionHash = questionHash;
+        lockCurrentToRight();
+      } else {
+        sendIndicator.textContent='❌ Error occurred';
+      }
+      
+      isProcessing=false;
+    }
+
+    askNow.onclick=()=>{
+      ctx.drawImage(video,0,0,frame.width,frame.height);
+      const imageData=ctx.getImageData(0,0,frame.width,frame.height);
+      const hash=getImageHash(imageData);
+      const base64Image=frame.toDataURL('image/jpeg', 0.92).split(',')[1];
+      sendImageToAI(base64Image, hash);
+    };
+
+    testBtn.onclick=()=>{
+      lastWorking = {
+        question:'Which artery supplies the lateral aspect of the forearm?',
+        answer:'Radial',
+        letter:'B',
+        rationale:'The radial artery runs along the lateral (thumb) side of the forearm and supplies that region.'
+      };
+      renderAnswer(workingBig, workingRat, workingMeta, lastWorking);
+    };
+
+    /* ---------- Locking controls ---------- */
+    function lockCurrentToRight(){
+      lastLocked = {...lastWorking};
+      renderAnswer(lockedBig, lockedRat, lockedMeta, lastLocked);
+      sendIndicator.textContent='🔒 Locked';
+    }
+    lockNow.onclick=lockCurrentToRight;
+
+    unlockBtn.onclick=()=>{
+      lockedQuestionHash=null;
+      lastLocked={question:'',answer:'–',letter:'',rationale:''};
+      renderAnswer(lockedBig, lockedRat, lockedMeta, lastLocked);
+      sendIndicator.textContent='🔓 Unlocked';
+    };
+
+    copyWorking.onclick=()=>{
+      const text = `${lastWorking.letter?lastWorking.letter+') ':''}${lastWorking.answer}`;
+      navigator.clipboard.writeText(text).then(()=>sendIndicator.textContent='📋 Copied').catch(()=>{});
+    };
+    
+    copyLocked.onclick=()=>{
+      const text = `${lastLocked.letter?lastLocked.letter+') ':''}${lastLocked.answer}`;
+      navigator.clipboard.writeText(text).then(()=>sendIndicator.textContent='📋 Copied').catch(()=>{});
+    };
+  </script>
+</body>
+</html>
